@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import MessageBubble from "./MessageBubble";
-import PushToTalk from "./PushToTalk";
+import MicButton from "./MicButton";
 import VoiceSelector from "./VoiceSelector";
 import SessionSidebar from "./SessionSidebar";
 import WelcomeScreen from "./WelcomeScreen";
@@ -318,7 +318,7 @@ export default function ChatInterface() {
       </div>
 
       {/* Input Area */}
-      <div className="px-4 py-4 pb-6 bg-gradient-to-t from-stone-100 to-transparent safe-bottom">
+      <div className="px-4 py-3 pb-5 safe-bottom">
         <div className="flex items-end gap-3 max-w-lg mx-auto">
           <form
             className="flex-1 flex gap-2"
@@ -344,12 +344,12 @@ export default function ChatInterface() {
               type="submit"
               disabled={isLoading || !textInput.trim()}
               className="rounded-2xl bg-blue-600 text-white px-4 py-3 text-sm font-medium
-                         disabled:opacity-30 hover:bg-blue-700 transition-colors"
+                         disabled:opacity-30 hover:bg-blue-700 transition-colors shrink-0"
             >
               Send
             </button>
           </form>
-          <PushToTalk
+          <MicButton
             onTranscript={handleTranscript}
             disabled={isLoading}
             isPlaying={isPlaying}
