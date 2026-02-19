@@ -6,12 +6,14 @@ interface MicButtonProps {
   onTranscript: (text: string) => void;
   disabled?: boolean;
   isPlaying?: boolean;
+  autoRestart?: boolean;
 }
 
 export default function MicButton({
   onTranscript,
   disabled,
   isPlaying,
+  autoRestart,
 }: MicButtonProps) {
   const [isListening, setIsListening] = useState(false);
   const [interimText, setInterimText] = useState("");
@@ -20,69 +22,87 @@ export default function MicButton({
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const fullTranscriptRef = useRef("");
   const hasSpokenRef = useRef(false);
+  const wantListeningRef = useRef(false);
+  const onTranscriptRef = useRef(onTranscript);
 
-  const SILENCE_TIMEOUT = 1800; // ms of silence before auto-sending
+  const SILENCE_TIMEOUT = 2000;
+
+  // Keep callback ref current without causing re-renders
+  useEffect(() => {
+    onTranscriptRef.current = onTranscript;
+  }, [onTranscript]);
 
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      stopListening();
+      wantListeningRef.current = false;
+      clearSilenceTimerFn();
+      killRecognition();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-stop mic when AI starts playing audio
+  // Auto-stop mic when AI starts playing, auto-restart when it stops
   useEffect(() => {
-    if (isPlaying && isListening) {
-      stopListening();
+    if (isPlaying) {
+      // AI is talking — stop listening
+      wantListeningRef.current = false;
+      clearSilenceTimerFn();
+      killRecognition();
+      setIsListening(false);
+      setInterimText("");
+    } else if (autoRestart && !disabled) {
+      // AI finished talking — auto-start listening again
+      const timer = setTimeout(() => {
+        if (!wantListeningRef.current) {
+          doStartListening();
+        }
+      }, 400);
+      return () => clearTimeout(timer);
     }
-  }, [isPlaying]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isPlaying, autoRestart, disabled]);
 
-  const clearSilenceTimer = useCallback(() => {
+  function clearSilenceTimerFn() {
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
     }
-  }, []);
+  }
 
-  const startSilenceTimer = useCallback(() => {
-    clearSilenceTimer();
-    silenceTimerRef.current = setTimeout(() => {
-      // Silence detected — send what we have and stop
-      const text = fullTranscriptRef.current.trim();
-      if (text) {
-        onTranscript(text);
-        fullTranscriptRef.current = "";
-        setInterimText("");
-        hasSpokenRef.current = false;
-      }
-      stopListening();
-    }, SILENCE_TIMEOUT);
-  }, [clearSilenceTimer, onTranscript]);
-
-  const stopListening = useCallback(() => {
-    clearSilenceTimer();
+  function killRecognition() {
     if (recognitionRef.current) {
       try {
         recognitionRef.current.abort();
       } catch {}
       recognitionRef.current = null;
     }
+  }
+
+  function doStopListening() {
+    wantListeningRef.current = false;
+    clearSilenceTimerFn();
+    killRecognition();
     setIsListening(false);
     setInterimText("");
     fullTranscriptRef.current = "";
     hasSpokenRef.current = false;
-  }, [clearSilenceTimer]);
+  }
 
-  const startListening = useCallback(() => {
+  function doStartListening() {
     if (disabled || isPlaying) return;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const SpeechRecognitionAPI =
-      (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const W = window as any;
+    const SpeechRecognitionAPI = W.SpeechRecognition || W.webkitSpeechRecognition;
     if (!SpeechRecognitionAPI) {
-      alert("Speech recognition is not supported in this browser. Try Chrome or Edge.");
+      alert("Speech recognition is not supported in this browser. Try Chrome or Safari.");
       return;
     }
+
+    // Clean up any existing instance
+    killRecognition();
+    clearSilenceTimerFn();
 
     const recognition = new SpeechRecognitionAPI();
     recognition.continuous = true;
@@ -92,6 +112,7 @@ export default function MicButton({
     fullTranscriptRef.current = "";
     hasSpokenRef.current = false;
     setInterimText("");
+    wantListeningRef.current = true;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
@@ -114,78 +135,122 @@ export default function MicButton({
         hasSpokenRef.current = true;
       }
 
-      // Reset silence timer on any new speech
-      if (hasSpokenRef.current) {
-        startSilenceTimer();
+      // Reset silence timer whenever we get speech
+      if (hasSpokenRef.current && finalSoFar) {
+        clearSilenceTimerFn();
+        silenceTimerRef.current = setTimeout(() => {
+          const text = fullTranscriptRef.current.trim();
+          if (text) {
+            onTranscriptRef.current(text);
+          }
+          doStopListening();
+        }, SILENCE_TIMEOUT);
       }
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => {
       if (event.error === "no-speech") {
-        // No speech detected — just keep listening, don't stop
+        // On mobile, "no-speech" fires after a few seconds of silence
+        // Restart recognition to keep listening
+        if (wantListeningRef.current) {
+          killRecognition();
+          setTimeout(() => {
+            if (wantListeningRef.current && !isPlaying) {
+              doStartListening();
+            }
+          }, 100);
+        }
+        return;
+      }
+      if (event.error === "not-allowed") {
+        alert("Microphone access was denied. Please allow microphone access in your browser settings.");
+        doStopListening();
         return;
       }
       if (event.error !== "aborted") {
         console.error("Speech recognition error:", event.error);
       }
-      stopListening();
+      doStopListening();
     };
 
     recognition.onend = () => {
-      // Web Speech API can stop on its own (e.g. long silence, mobile background)
-      // If we're still supposed to be listening, restart it
-      if (recognitionRef.current === recognition) {
-        // Send any accumulated text first
+      // Recognition ended — if we still want to be listening, restart it
+      // This handles mobile browsers that auto-stop after a few seconds
+      if (wantListeningRef.current) {
+        // Send any accumulated final text first
         const text = fullTranscriptRef.current.trim();
-        if (text) {
-          onTranscript(text);
+        if (text && hasSpokenRef.current) {
+          onTranscriptRef.current(text);
           fullTranscriptRef.current = "";
           hasSpokenRef.current = false;
+          setInterimText("");
+          doStopListening();
+        } else {
+          // No speech yet — restart to keep listening
+          recognitionRef.current = null;
+          setTimeout(() => {
+            if (wantListeningRef.current && !isPlaying) {
+              doStartListening();
+            }
+          }, 100);
         }
-        setIsListening(false);
-        setInterimText("");
-        recognitionRef.current = null;
-        clearSilenceTimer();
       }
     };
 
     recognitionRef.current = recognition;
-    recognition.start();
-    setIsListening(true);
-  }, [disabled, isPlaying, onTranscript, startSilenceTimer, stopListening, clearSilenceTimer]);
+
+    try {
+      recognition.start();
+      setIsListening(true);
+    } catch (e) {
+      console.error("Failed to start speech recognition:", e);
+      doStopListening();
+    }
+  }
 
   const toggleMic = useCallback(() => {
-    if (isListening) {
+    if (isListening || wantListeningRef.current) {
       // Manual stop — send whatever we have
       const text = fullTranscriptRef.current.trim();
       if (text) {
-        onTranscript(text);
+        onTranscriptRef.current(text);
       }
-      stopListening();
+      doStopListening();
     } else {
-      startListening();
+      doStartListening();
     }
-  }, [isListening, onTranscript, stopListening, startListening]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isListening, disabled, isPlaying]);
 
   const displayText = interimText || (isListening && hasSpokenRef.current ? fullTranscriptRef.current : "");
 
   return (
-    <div className="flex flex-col items-center gap-2">
+    <div className="flex flex-col items-center gap-1.5">
       {displayText ? (
-        <div className="text-xs text-stone-500 max-w-[280px] text-center line-clamp-2 min-h-[20px] px-2">
+        <div className="text-xs text-stone-500 max-w-[280px] text-center line-clamp-2 min-h-[18px] px-2">
           {displayText}
         </div>
       ) : (
         isListening && (
-          <div className="text-xs text-stone-400 min-h-[20px]">Listening...</div>
+          <div className="text-xs text-stone-400 min-h-[18px]">Listening...</div>
         )
       )}
       <button
-        onClick={toggleMic}
+        onTouchEnd={(e) => {
+          // Prevent ghost click + handle tap directly for mobile
+          e.preventDefault();
+          toggleMic();
+        }}
+        onClick={(e) => {
+          // Desktop click — only fire if not from a touch
+          if (e.detail > 0) {
+            toggleMic();
+          }
+        }}
         disabled={disabled}
         className={`
-          relative w-16 h-16 rounded-full transition-all duration-200
+          relative w-[72px] h-[72px] rounded-full transition-all duration-200
           flex items-center justify-center select-none
           ${
             disabled
@@ -197,9 +262,10 @@ export default function MicButton({
                   : "bg-blue-600 text-white shadow-lg shadow-blue-600/30 active:scale-95"
           }
         `}
+        style={{ WebkitTapHighlightColor: "transparent", touchAction: "manipulation" }}
       >
         {isListening && (
-          <span className="absolute inset-[-4px] rounded-full border-2 border-red-400 animate-pulse opacity-60" />
+          <span className="absolute inset-[-6px] rounded-full border-[2.5px] border-red-400 animate-pulse opacity-60" />
         )}
         {isPlaying ? (
           <SpeakerIcon />
@@ -209,13 +275,13 @@ export default function MicButton({
           <MicIcon />
         )}
       </button>
-      <span className="text-[11px] text-stone-400">
+      <span className="text-[11px] text-stone-400 select-none">
         {disabled
           ? "Thinking..."
           : isPlaying
             ? "Speaking..."
             : isListening
-              ? "Tap to stop"
+              ? "Listening \u00b7 tap to stop"
               : "Tap to talk"}
       </span>
     </div>
@@ -224,7 +290,7 @@ export default function MicButton({
 
 function MicIcon() {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <rect x="9" y="2" width="6" height="11" rx="3" />
       <path d="M5 10a7 7 0 0 0 14 0" />
       <line x1="12" y1="19" x2="12" y2="22" />
@@ -234,7 +300,7 @@ function MicIcon() {
 
 function MicActiveIcon() {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1">
       <rect x="9" y="2" width="6" height="11" rx="3" />
       <path d="M5 10a7 7 0 0 0 14 0" fill="none" strokeWidth="2" />
       <line x1="12" y1="19" x2="12" y2="22" strokeWidth="2" />
@@ -244,7 +310,7 @@ function MicActiveIcon() {
 
 function SpeakerIcon() {
   return (
-    <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
       <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
       <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />

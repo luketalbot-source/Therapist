@@ -22,16 +22,34 @@ import {
 export default function ChatInterface() {
   const [session, setSession] = useState<Session | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [voice, setVoice] = useState("nova");
+  const [voice, setVoice] = useState("rachel");
   const [isLoading, setIsLoading] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [streamingText, setStreamingText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
   const [textInput, setTextInput] = useState("");
+  const [micActive, setMicActive] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+
+  // Create a persistent audio element on mount for iOS compatibility
+  // iOS Safari requires audio to be played from a user gesture context,
+  // and reusing the same element helps maintain that context
+  useEffect(() => {
+    const audio = new Audio();
+    // playsInline and webkitPlaysInline are needed for iOS Safari
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const a = audio as any;
+    a.playsInline = true;
+    a.webkitPlaysInline = true;
+    audioRef.current = audio;
+    return () => {
+      audio.pause();
+      audio.src = "";
+    };
+  }, []);
 
   // Load saved state on mount
   useEffect(() => {
@@ -61,7 +79,25 @@ export default function ChatInterface() {
     saveVoice(v);
   }, []);
 
+  // "Prime" the audio element with a silent buffer on user interaction
+  // This unlocks audio playback on iOS
+  const primeAudio = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    // Create a tiny silent wav
+    const silence =
+      "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=";
+    audio.src = silence;
+    audio.play().then(() => {
+      audio.pause();
+      audio.currentTime = 0;
+    }).catch(() => {});
+  }, []);
+
   const startConversation = useCallback(async () => {
+    // Prime audio on this user gesture (critical for iOS)
+    primeAudio();
+
     const newSession = createSession();
     setSession(newSession);
     setActiveSessionId(newSession.id);
@@ -80,7 +116,6 @@ export default function ChatInterface() {
       }
     } catch (error) {
       console.error("Failed to get greeting:", error);
-      // Fallback greeting
       newSession.messages = [
         {
           role: "assistant",
@@ -93,6 +128,7 @@ export default function ChatInterface() {
       setSessions(loadSessions());
     }
     setIsLoading(false);
+    setMicActive(true);
   }, [voice]);
 
   const fetchAIResponse = async (messages: Message[]): Promise<string> => {
@@ -149,6 +185,7 @@ export default function ChatInterface() {
       });
 
       if (!response.ok) {
+        console.error("TTS request failed:", response.status);
         setIsPlaying(false);
         return;
       }
@@ -156,19 +193,33 @@ export default function ChatInterface() {
       const blob = await response.blob();
       const url = URL.createObjectURL(blob);
 
-      const audio = new Audio(url);
-      audioRef.current = audio;
+      const audio = audioRef.current;
+      if (!audio) {
+        setIsPlaying(false);
+        URL.revokeObjectURL(url);
+        return;
+      }
 
-      audio.onended = () => {
+      // Set up event handlers
+      const cleanup = () => {
         setIsPlaying(false);
         URL.revokeObjectURL(url);
       };
+
+      audio.onended = cleanup;
       audio.onerror = () => {
-        setIsPlaying(false);
-        URL.revokeObjectURL(url);
+        console.error("Audio playback error");
+        cleanup();
       };
 
-      await audio.play();
+      audio.src = url;
+
+      try {
+        await audio.play();
+      } catch (e) {
+        console.error("Audio play failed:", e);
+        cleanup();
+      }
     } catch (error) {
       console.error("TTS error:", error);
       setIsPlaying(false);
@@ -180,22 +231,20 @@ export default function ChatInterface() {
       if (!session || isLoading) return;
 
       // Stop any playing audio
-      if (audioRef.current) {
+      if (audioRef.current && !audioRef.current.paused) {
         audioRef.current.pause();
-        audioRef.current = null;
+        audioRef.current.currentTime = 0;
         setIsPlaying(false);
       }
 
       const userMessage: Message = { role: "user", content: text };
       const updatedMessages = [...session.messages, userMessage];
 
-      // Update session with user message
       const updatedSession = { ...session, messages: updatedMessages };
       setSession(updatedSession);
       saveSession(updatedSession);
       setSessions(loadSessions());
 
-      // Get AI response
       setIsLoading(true);
       try {
         const response = await fetchAIResponse(updatedMessages);
@@ -226,12 +275,14 @@ export default function ChatInterface() {
       setSession(selected);
       setActiveSessionId(id);
       setHasStarted(true);
+      setMicActive(true);
     }
   }, []);
 
   const handleNewSession = useCallback(() => {
     setHasStarted(false);
     setSession(null);
+    setMicActive(false);
   }, []);
 
   const handleDeleteSession = useCallback(
@@ -246,6 +297,7 @@ export default function ChatInterface() {
         } else {
           setSession(null);
           setHasStarted(false);
+          setMicActive(false);
         }
       }
     },
@@ -286,7 +338,7 @@ export default function ChatInterface() {
 
         <VoiceSelector selectedVoice={voice} onVoiceChange={handleVoiceChange} />
 
-        <div className="w-8" /> {/* Spacer for centering */}
+        <div className="w-8" />
       </header>
 
       {/* Messages */}
@@ -353,6 +405,7 @@ export default function ChatInterface() {
             onTranscript={handleTranscript}
             disabled={isLoading}
             isPlaying={isPlaying}
+            autoRestart={micActive}
           />
         </div>
       </div>
