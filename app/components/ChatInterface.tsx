@@ -28,7 +28,7 @@ export default function ChatInterface() {
   const [streamingText, setStreamingText] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [hasStarted, setHasStarted] = useState(false);
-  const [textInput, setTextInput] = useState("");
+  // textInput removed — voice-only interface
   const [micActive, setMicActive] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -369,45 +369,14 @@ export default function ChatInterface() {
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Input Area */}
-      <div className="px-4 py-3 pb-5 safe-bottom">
-        <div className="flex items-end gap-3 max-w-lg mx-auto">
-          <form
-            className="flex-1 flex gap-2"
-            onSubmit={(e) => {
-              e.preventDefault();
-              if (textInput.trim() && !isLoading) {
-                handleTranscript(textInput.trim());
-                setTextInput("");
-              }
-            }}
-          >
-            <input
-              type="text"
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              placeholder="Type a message..."
-              disabled={isLoading}
-              className="flex-1 rounded-2xl border border-stone-200 bg-white px-4 py-3 text-[15px]
-                         text-stone-800 placeholder:text-stone-400 focus:outline-none focus:ring-2
-                         focus:ring-blue-500/30 focus:border-blue-400 disabled:opacity-50"
-            />
-            <button
-              type="submit"
-              disabled={isLoading || !textInput.trim()}
-              className="rounded-2xl bg-blue-600 text-white px-4 py-3 text-sm font-medium
-                         disabled:opacity-30 hover:bg-blue-700 transition-colors shrink-0"
-            >
-              Send
-            </button>
-          </form>
-          <MicButton
-            onTranscript={handleTranscript}
-            disabled={isLoading}
-            isPlaying={isPlaying}
-            autoRestart={micActive}
-          />
-        </div>
+      {/* Mic Button — centered */}
+      <div className="py-4 pb-6 safe-bottom flex justify-center">
+        <MicButton
+          onTranscript={handleTranscript}
+          disabled={isLoading}
+          isPlaying={isPlaying}
+          autoRestart={micActive}
+        />
       </div>
 
       {/* Session Sidebar */}

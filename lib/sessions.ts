@@ -81,8 +81,8 @@ export function setActiveSessionId(id: string): void {
 }
 
 export function getSavedVoice(): string {
-  if (typeof window === "undefined") return "nova";
-  return localStorage.getItem(VOICE_KEY) || "rachel";
+  if (typeof window === "undefined") return "dr-lauren";
+  return localStorage.getItem(VOICE_KEY) || "dr-lauren";
 }
 
 export function saveVoice(voice: string): void {

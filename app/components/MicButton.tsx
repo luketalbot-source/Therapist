@@ -16,18 +16,18 @@ export default function MicButton({
   autoRestart,
 }: MicButtonProps) {
   const [isListening, setIsListening] = useState(false);
-  const [interimText, setInterimText] = useState("");
+  const [displayText, setDisplayText] = useState("");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const fullTranscriptRef = useRef("");
-  const hasSpokenRef = useRef(false);
+  const bestTranscriptRef = useRef("");
+  const lastActivityRef = useRef(0);
   const wantListeningRef = useRef(false);
   const onTranscriptRef = useRef(onTranscript);
 
-  const SILENCE_TIMEOUT = 2000;
+  // How long to wait after last speech before auto-sending
+  const SILENCE_MS = 1800;
 
-  // Keep callback ref current without causing re-renders
   useEffect(() => {
     onTranscriptRef.current = onTranscript;
   }, [onTranscript]);
@@ -36,34 +36,33 @@ export default function MicButton({
   useEffect(() => {
     return () => {
       wantListeningRef.current = false;
-      clearSilenceTimerFn();
+      clearTimer();
       killRecognition();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Auto-stop mic when AI starts playing, auto-restart when it stops
+  // When AI starts playing → stop mic. When AI stops → auto-restart mic.
   useEffect(() => {
     if (isPlaying) {
-      // AI is talking — stop listening
       wantListeningRef.current = false;
-      clearSilenceTimerFn();
+      clearTimer();
       killRecognition();
       setIsListening(false);
-      setInterimText("");
+      setDisplayText("");
+      bestTranscriptRef.current = "";
     } else if (autoRestart && !disabled) {
-      // AI finished talking — auto-start listening again
-      const timer = setTimeout(() => {
-        if (!wantListeningRef.current) {
-          doStartListening();
+      const t = setTimeout(() => {
+        if (!wantListeningRef.current && !disabled) {
+          startListening();
         }
-      }, 400);
-      return () => clearTimeout(timer);
+      }, 500);
+      return () => clearTimeout(t);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isPlaying, autoRestart, disabled]);
 
-  function clearSilenceTimerFn() {
+  function clearTimer() {
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
@@ -72,185 +71,205 @@ export default function MicButton({
 
   function killRecognition() {
     if (recognitionRef.current) {
-      try {
-        recognitionRef.current.abort();
-      } catch {}
+      try { recognitionRef.current.abort(); } catch {}
       recognitionRef.current = null;
     }
   }
 
-  function doStopListening() {
+  function sendAndStop() {
+    const text = bestTranscriptRef.current.trim();
+    if (text) {
+      onTranscriptRef.current(text);
+    }
     wantListeningRef.current = false;
-    clearSilenceTimerFn();
+    clearTimer();
     killRecognition();
     setIsListening(false);
-    setInterimText("");
-    fullTranscriptRef.current = "";
-    hasSpokenRef.current = false;
+    setDisplayText("");
+    bestTranscriptRef.current = "";
   }
 
-  function doStartListening() {
+  function resetSilenceTimer() {
+    clearTimer();
+    lastActivityRef.current = Date.now();
+    silenceTimerRef.current = setTimeout(() => {
+      // Only send if we actually have text
+      if (bestTranscriptRef.current.trim()) {
+        sendAndStop();
+      }
+    }, SILENCE_MS);
+  }
+
+  function startListening() {
     if (disabled || isPlaying) return;
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const W = window as any;
-    const SpeechRecognitionAPI = W.SpeechRecognition || W.webkitSpeechRecognition;
-    if (!SpeechRecognitionAPI) {
+    const SpeechAPI = W.SpeechRecognition || W.webkitSpeechRecognition;
+    if (!SpeechAPI) {
       alert("Speech recognition is not supported in this browser. Try Chrome or Safari.");
       return;
     }
 
-    // Clean up any existing instance
     killRecognition();
-    clearSilenceTimerFn();
+    clearTimer();
 
-    const recognition = new SpeechRecognitionAPI();
-    recognition.continuous = true;
+    const recognition = new SpeechAPI();
+    // On mobile Safari, continuous=false is more reliable
+    // It fires onend after each phrase, and we restart it
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+    recognition.continuous = !isMobile;
     recognition.interimResults = true;
     recognition.lang = "en-US";
+    // Increase maxAlternatives for better accuracy
+    recognition.maxAlternatives = 1;
 
-    fullTranscriptRef.current = "";
-    hasSpokenRef.current = false;
-    setInterimText("");
+    bestTranscriptRef.current = "";
     wantListeningRef.current = true;
+    setDisplayText("");
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onresult = (event: any) => {
-      let finalSoFar = "";
-      let interimSoFar = "";
+      let transcript = "";
+      let hasInterim = false;
 
       for (let i = 0; i < event.results.length; i++) {
         const result = event.results[i];
-        if (result.isFinal) {
-          finalSoFar += result[0].transcript;
-        } else {
-          interimSoFar += result[0].transcript;
-        }
+        transcript += result[0].transcript;
+        if (!result.isFinal) hasInterim = true;
       }
 
-      fullTranscriptRef.current = finalSoFar;
-      setInterimText(interimSoFar);
-
-      if (finalSoFar || interimSoFar) {
-        hasSpokenRef.current = true;
-      }
-
-      // Reset silence timer whenever we get speech
-      if (hasSpokenRef.current && finalSoFar) {
-        clearSilenceTimerFn();
-        silenceTimerRef.current = setTimeout(() => {
-          const text = fullTranscriptRef.current.trim();
-          if (text) {
-            onTranscriptRef.current(text);
-          }
-          doStopListening();
-        }, SILENCE_TIMEOUT);
+      if (transcript) {
+        bestTranscriptRef.current = transcript;
+        setDisplayText(transcript);
+        // Any speech activity resets the silence timer
+        resetSilenceTimer();
       }
     };
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     recognition.onerror = (event: any) => {
       if (event.error === "no-speech") {
-        // On mobile, "no-speech" fires after a few seconds of silence
-        // Restart recognition to keep listening
+        // Mobile fires this often — restart if we want to keep listening
         if (wantListeningRef.current) {
           killRecognition();
           setTimeout(() => {
             if (wantListeningRef.current && !isPlaying) {
-              doStartListening();
+              startListening();
             }
-          }, 100);
+          }, 200);
         }
         return;
       }
       if (event.error === "not-allowed") {
-        alert("Microphone access was denied. Please allow microphone access in your browser settings.");
-        doStopListening();
+        alert("Please allow microphone access to use voice input.");
+        wantListeningRef.current = false;
+        clearTimer();
+        setIsListening(false);
         return;
       }
       if (event.error !== "aborted") {
-        console.error("Speech recognition error:", event.error);
+        console.error("Speech error:", event.error);
       }
-      doStopListening();
+      // For other errors, try restarting if we want to keep listening
+      if (wantListeningRef.current) {
+        killRecognition();
+        setTimeout(() => {
+          if (wantListeningRef.current && !isPlaying) {
+            startListening();
+          }
+        }, 300);
+      }
     };
 
     recognition.onend = () => {
-      // Recognition ended — if we still want to be listening, restart it
-      // This handles mobile browsers that auto-stop after a few seconds
+      // Recognition ended — on mobile this happens after every phrase
       if (wantListeningRef.current) {
-        // Send any accumulated final text first
-        const text = fullTranscriptRef.current.trim();
-        if (text && hasSpokenRef.current) {
-          onTranscriptRef.current(text);
-          fullTranscriptRef.current = "";
-          hasSpokenRef.current = false;
-          setInterimText("");
-          doStopListening();
-        } else {
-          // No speech yet — restart to keep listening
-          recognitionRef.current = null;
-          setTimeout(() => {
-            if (wantListeningRef.current && !isPlaying) {
-              doStartListening();
+        // If we have text and no new speech comes in, the silence timer will fire
+        // Meanwhile, restart recognition to catch more speech
+        recognitionRef.current = null;
+        setTimeout(() => {
+          if (wantListeningRef.current && !isPlaying) {
+            // Don't clear bestTranscript — we're accumulating across restarts
+            const saved = bestTranscriptRef.current;
+
+            killRecognition();
+            clearTimer(); // Will be reset by next onresult
+
+            const newRecognition = new SpeechAPI();
+            newRecognition.continuous = !isMobile;
+            newRecognition.interimResults = true;
+            newRecognition.lang = "en-US";
+
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            newRecognition.onresult = (event: any) => {
+              let transcript = "";
+              for (let i = 0; i < event.results.length; i++) {
+                transcript += event.results[i][0].transcript;
+              }
+              if (transcript) {
+                // Append new speech to what we already had
+                bestTranscriptRef.current = saved ? saved + " " + transcript : transcript;
+                setDisplayText(bestTranscriptRef.current);
+                resetSilenceTimer();
+              }
+            };
+            newRecognition.onerror = recognition.onerror;
+            newRecognition.onend = recognition.onend;
+
+            recognitionRef.current = newRecognition;
+            try {
+              newRecognition.start();
+            } catch {
+              // If start fails, send what we have
+              if (saved.trim()) {
+                bestTranscriptRef.current = saved;
+                sendAndStop();
+              }
             }
-          }, 100);
-        }
+
+            // If we had text from before and no new speech comes, send after timeout
+            if (saved.trim()) {
+              resetSilenceTimer();
+            }
+          }
+        }, 150);
       }
     };
 
     recognitionRef.current = recognition;
-
     try {
       recognition.start();
       setIsListening(true);
     } catch (e) {
-      console.error("Failed to start speech recognition:", e);
-      doStopListening();
+      console.error("Failed to start recognition:", e);
+      wantListeningRef.current = false;
+      setIsListening(false);
     }
   }
 
   const toggleMic = useCallback(() => {
     if (isListening || wantListeningRef.current) {
-      // Manual stop — send whatever we have
-      const text = fullTranscriptRef.current.trim();
-      if (text) {
-        onTranscriptRef.current(text);
-      }
-      doStopListening();
+      sendAndStop();
     } else {
-      doStartListening();
+      startListening();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isListening, disabled, isPlaying]);
 
-  const displayText = interimText || (isListening && hasSpokenRef.current ? fullTranscriptRef.current : "");
-
   return (
-    <div className="flex flex-col items-center gap-1.5">
-      {displayText ? (
-        <div className="text-xs text-stone-500 max-w-[280px] text-center line-clamp-2 min-h-[18px] px-2">
-          {displayText}
-        </div>
-      ) : (
-        isListening && (
-          <div className="text-xs text-stone-400 min-h-[18px]">Listening...</div>
-        )
-      )}
+    <div className="flex flex-col items-center gap-3">
       <button
         onTouchEnd={(e) => {
-          // Prevent ghost click + handle tap directly for mobile
           e.preventDefault();
           toggleMic();
         }}
-        onClick={(e) => {
-          // Desktop click — only fire if not from a touch
-          if (e.detail > 0) {
-            toggleMic();
-          }
+        onClick={() => {
+          toggleMic();
         }}
         disabled={disabled}
         className={`
-          relative w-[72px] h-[72px] rounded-full transition-all duration-200
+          relative w-24 h-24 rounded-full transition-all duration-200
           flex items-center justify-center select-none
           ${
             disabled
@@ -258,14 +277,14 @@ export default function MicButton({
               : isPlaying
                 ? "bg-stone-300 text-stone-500"
                 : isListening
-                  ? "bg-red-500 text-white shadow-lg shadow-red-500/30"
-                  : "bg-blue-600 text-white shadow-lg shadow-blue-600/30 active:scale-95"
+                  ? "bg-red-500 text-white shadow-xl shadow-red-500/30 scale-105"
+                  : "bg-blue-600 text-white shadow-xl shadow-blue-600/30 active:scale-95"
           }
         `}
         style={{ WebkitTapHighlightColor: "transparent", touchAction: "manipulation" }}
       >
         {isListening && (
-          <span className="absolute inset-[-6px] rounded-full border-[2.5px] border-red-400 animate-pulse opacity-60" />
+          <span className="absolute inset-[-8px] rounded-full border-[3px] border-red-400 animate-pulse opacity-50" />
         )}
         {isPlaying ? (
           <SpeakerIcon />
@@ -275,22 +294,29 @@ export default function MicButton({
           <MicIcon />
         )}
       </button>
-      <span className="text-[11px] text-stone-400 select-none">
-        {disabled
-          ? "Thinking..."
-          : isPlaying
-            ? "Speaking..."
-            : isListening
-              ? "Listening \u00b7 tap to stop"
-              : "Tap to talk"}
-      </span>
+
+      {displayText ? (
+        <div className="text-sm text-stone-600 max-w-[300px] text-center line-clamp-2 px-4 min-h-[40px] flex items-center">
+          {displayText}
+        </div>
+      ) : (
+        <div className="text-xs text-stone-400 min-h-[40px] flex items-center">
+          {disabled
+            ? "Thinking..."
+            : isPlaying
+              ? "Speaking..."
+              : isListening
+                ? "Listening..."
+                : "Tap to talk"}
+        </div>
+      )}
     </div>
   );
 }
 
 function MicIcon() {
   return (
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <rect x="9" y="2" width="6" height="11" rx="3" />
       <path d="M5 10a7 7 0 0 0 14 0" />
       <line x1="12" y1="19" x2="12" y2="22" />
@@ -300,17 +326,17 @@ function MicIcon() {
 
 function MicActiveIcon() {
   return (
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1">
       <rect x="9" y="2" width="6" height="11" rx="3" />
-      <path d="M5 10a7 7 0 0 0 14 0" fill="none" strokeWidth="2" />
-      <line x1="12" y1="19" x2="12" y2="22" strokeWidth="2" />
+      <path d="M5 10a7 7 0 0 0 14 0" fill="none" strokeWidth="1.5" />
+      <line x1="12" y1="19" x2="12" y2="22" strokeWidth="1.5" />
     </svg>
   );
 }
 
 function SpeakerIcon() {
   return (
-    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
       <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
       <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />
       <path d="M19.07 4.93a10 10 0 0 1 0 14.14" />

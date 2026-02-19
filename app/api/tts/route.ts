@@ -1,11 +1,14 @@
 import { NextRequest } from "next/server";
 
+// Map app voice IDs to ElevenLabs voice IDs
 const VOICE_MAP: Record<string, string> = {
-  rachel: "21m00Tcm4TlvDq8ikWAM",
-  elli: "MF3mGyEYCl7XYWbV9V6O",
-  antoni: "ErXwobaYiN019PkySvjV",
-  adam: "pNInz6obpgDQGcFmaJgB",
+  "dr-lauren": "0G7xjh2pNSLRvJSpklE4",
+  "maria": "5GR0JTHRVmv00OeaRI9u",
+  "jerry-b": "zKb9yQZzbyTOE2hxatpu",
+  "matthew": "gscOrkdeRphuXV3NcHOp",
 };
+
+const DEFAULT_VOICE_ID = "0G7xjh2pNSLRvJSpklE4"; // Dr Lauren
 
 export async function POST(req: NextRequest) {
   try {
@@ -18,7 +21,7 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    const voiceId = VOICE_MAP[voice] || VOICE_MAP.rachel;
+    const voiceId = VOICE_MAP[voice] || DEFAULT_VOICE_ID;
 
     const response = await fetch(
       `https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`,

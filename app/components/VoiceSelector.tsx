@@ -1,11 +1,19 @@
 "use client";
 
 export const VOICES = [
-  { id: "rachel", label: "Female (conversational)", shortLabel: "Rachel" },
-  { id: "elli", label: "Female (warm)", shortLabel: "Elli" },
-  { id: "antoni", label: "Male (warm)", shortLabel: "Antoni" },
-  { id: "adam", label: "Male (deep)", shortLabel: "Adam" },
+  { id: "dr-lauren", label: "Dr Lauren", shortLabel: "Dr Lauren" },
+  { id: "maria", label: "Maria", shortLabel: "Maria" },
+  { id: "jerry-b", label: "Jerry B", shortLabel: "Jerry B" },
+  { id: "matthew", label: "Matthew Wheeler", shortLabel: "Matthew" },
 ] as const;
+
+// Map display IDs to ElevenLabs voice IDs
+export const VOICE_ID_MAP: Record<string, string> = {
+  "dr-lauren": "0G7xjh2pNSLRvJSpklE4",
+  "maria": "5GR0JTHRVmv00OeaRI9u",
+  "jerry-b": "zKb9yQZzbyTOE2hxatpu",
+  "matthew": "gscOrkdeRphuXV3NcHOp",
+};
 
 interface VoiceSelectorProps {
   selectedVoice: string;
@@ -17,7 +25,7 @@ export default function VoiceSelector({
   onVoiceChange,
 }: VoiceSelectorProps) {
   return (
-    <div className="flex gap-1.5 items-center">
+    <div className="flex gap-1.5 items-center flex-wrap justify-center">
       {VOICES.map((voice) => (
         <button
           key={voice.id}
