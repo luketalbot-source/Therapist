@@ -22,7 +22,7 @@ import {
 export default function ChatInterface() {
   const [session, setSession] = useState<Session | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [voice, setVoice] = useState("rachel");
+  const [voice, setVoice] = useState("dr-lauren");
   const [isLoading, setIsLoading] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [streamingText, setStreamingText] = useState("");
